@@ -2,49 +2,51 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 
-const TOTAL_BLOCKS = 1844
-const MULTIPLIER = 50_000_000
-const RANGE_START_HEX = '4000000000000000'
+const TOTAL_BLOCKS = 92_233_720_368
+const MULTIPLIER   = 50_000_000
+const BASE_HEX     = BigInt('0x4000000000000000')
 
 type Agent = {
   name: string
   speed: number
-  status: 'working' | 'idle' | 'offline' | 'done'
+  status: 'working' | 'idle' | 'offline'
   currentBlock: number
   lastSeen: number
 }
 
 type DashboardData = {
   agents: Agent[]
-  completed: number[]
-  inProgress: number[]
-  recentCompletions: { block: number; ts: number }[]
+  usedCount: number
   totalBlocks: number
   progress: number
+  recentCompletions: { block: number; agent: string }[]
 }
 
 function blockToHex(i: number): string {
-  const start = BigInt('0x4000000000000000')
-  const val = start + BigInt(i) * BigInt(MULTIPLIER)
-  return val.toString(16).toUpperCase().padStart(16, '0')
+  const val = BASE_HEX + BigInt(i) * BigInt(MULTIPLIER)
+  return '0x' + val.toString(16).toUpperCase().padStart(16, '0')
 }
 
 function formatSpeed(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M/s`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K/s`
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K/s`
   return `${n}/s`
 }
 
 function timeAgo(ts: number): string {
   const s = Math.floor((Date.now() - ts) / 1000)
-  if (s < 60) return `${s}s atrás`
-  if (s < 3600) return `${Math.floor(s / 60)}m atrás`
-  return `${Math.floor(s / 3600)}h atrás`
+  if (s < 60)   return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m`
+  return `${Math.floor(s / 3600)}h`
+}
+
+function formatBig(n: number): string {
+  return n.toLocaleString('pt-BR')
 }
 
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null)
-  const [tick, setTick] = useState(0)
+  const [now, setNow] = useState(Date.now())
   const intervalRef = useRef<NodeJS.Timeout>()
 
   const fetchData = useCallback(async () => {
@@ -52,355 +54,370 @@ export default function Dashboard() {
       const r = await fetch('/api/agent')
       const d = await r.json()
       setData(d)
+      setNow(Date.now())
     } catch {}
   }, [])
 
   useEffect(() => {
     fetchData()
-    intervalRef.current = setInterval(() => {
-      fetchData()
-      setTick(t => t + 1)
-    }, 1500)
+    intervalRef.current = setInterval(fetchData, 2000)
     return () => clearInterval(intervalRef.current)
   }, [fetchData])
 
-  const completedSet = new Set(data?.completed ?? [])
-  const inProgressSet = new Set(data?.inProgress ?? [])
-  const completedCount = data?.completed.length ?? 0
-  const progressPct = data ? Math.round(data.progress * 100) : 0
-  const onlineAgents = (data?.agents ?? []).filter(a => a.status !== 'offline')
-  const totalSpeed = onlineAgents.reduce((s, a) => s + a.speed, 0)
+  const online  = (data?.agents ?? []).filter(a => a.status !== 'offline')
+  const offline = (data?.agents ?? []).filter(a => a.status === 'offline')
+  const totalSpeed = online.reduce((s, a) => s + a.speed, 0)
+  const used = data?.usedCount ?? 0
+  const pct  = data ? (data.progress * 100).toFixed(6) : '0.000000'
 
   return (
     <div className="root">
       <header>
-        <div className="logo">
-          <span className="logo-icon">⬡</span>
-          <span className="logo-text">HASHSCAN</span>
-          <span className="logo-sub">distributed range processor</span>
+        <div className="brand">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+            <polygon points="14,2 26,8 26,20 14,26 2,20 2,8" stroke="#00e5ff" strokeWidth="1.5" fill="none" opacity="0.8"/>
+            <polygon points="14,7 21,11 21,17 14,21 7,17 7,11" fill="#00e5ff" opacity="0.15"/>
+            <circle cx="14" cy="14" r="3" fill="#00e5ff"/>
+          </svg>
+          <div>
+            <div className="brand-name">HASHSCAN</div>
+            <div className="brand-sub">distributed block processor</div>
+          </div>
         </div>
         <div className="header-stats">
-          <div className="hstat">
-            <span className="hstat-val">{onlineAgents.length}</span>
-            <span className="hstat-lbl">agentes online</span>
+          <div className="hs">
+            <div className="hs-val">{online.length}</div>
+            <div className="hs-lbl">agentes</div>
           </div>
-          <div className="hstat">
-            <span className="hstat-val">{formatSpeed(totalSpeed)}</span>
-            <span className="hstat-lbl">velocidade total</span>
+          <div className="hs">
+            <div className="hs-val">{formatSpeed(totalSpeed)}</div>
+            <div className="hs-lbl">velocidade total</div>
           </div>
-          <div className="hstat">
-            <span className="hstat-val">{progressPct}%</span>
-            <span className="hstat-lbl">concluído</span>
+          <div className="hs">
+            <div className="hs-val accent">{pct}%</div>
+            <div className="hs-lbl">progresso</div>
           </div>
-          <div className="hstat">
-            <span className="hstat-val">{completedCount.toLocaleString()}</span>
-            <span className="hstat-lbl">/ {TOTAL_BLOCKS} blocos</span>
+          <div className="hs">
+            <div className="hs-val">{formatBig(used)}</div>
+            <div className="hs-lbl">blocos usados</div>
+          </div>
+          <div className="hs">
+            <div className="hs-val dim">{formatBig(TOTAL_BLOCKS)}</div>
+            <div className="hs-lbl">total de blocos</div>
           </div>
         </div>
       </header>
 
-      <div className="range-bar-wrap">
-        <div className="range-label">
-          <span className="mono">0x{RANGE_START_HEX}</span>
-          <span className="range-title">RANGE TOTAL: 0x4000000000000000 → 0x7FFFFFFFFFFFFFFF</span>
-          <span className="mono">0x7FFFFFFFFFFFFFFF</span>
+      {/* Progress bar */}
+      <div className="prog-wrap">
+        <div className="prog-track">
+          <div className="prog-fill" style={{ width: `${Math.min(data?.progress ?? 0, 1) * 100}%` }} />
         </div>
-        <div className="range-bar">
-          <div className="range-fill" style={{ width: `${progressPct}%` }} />
+        <div className="prog-labels">
+          <span className="mono dim">0x4000000000000000</span>
+          <span className="mono dim">0x7FFFFFFFFFFFFFFF</span>
         </div>
       </div>
 
-      <div className="main-grid">
-        {/* Block map */}
-        <section className="block-map-section">
-          <div className="section-header">
-            <h2>MAPA DE BLOCOS</h2>
-            <div className="legend">
-              <span className="leg leg-done">■ concluído</span>
-              <span className="leg leg-active">■ em processo</span>
-              <span className="leg leg-pending">■ pendente</span>
-            </div>
+      <div className="layout">
+        {/* Agents */}
+        <section className="panel agents-panel">
+          <div className="panel-title">AGENTES ONLINE <span className="badge">{online.length}</span></div>
+          <div className="agents-list">
+            {online.length === 0 && <div className="empty">nenhum agente conectado</div>}
+            {online.map(agent => (
+              <div key={agent.name} className={`agent-card ${agent.status}`}>
+                <div className="agent-row1">
+                  <div className="agent-left">
+                    <span className={`dot dot-${agent.status}`} />
+                    <span className="agent-name">{agent.name}</span>
+                  </div>
+                  <span className={`tag tag-${agent.status}`}>{agent.status}</span>
+                </div>
+                <div className="agent-row2">
+                  <div className="meta-item">
+                    <div className="meta-lbl">velocidade</div>
+                    <div className="meta-val">{formatSpeed(agent.speed)}</div>
+                  </div>
+                  <div className="meta-item">
+                    <div className="meta-lbl">bloco atual</div>
+                    <div className="meta-val mono">#{agent.currentBlock.toLocaleString('pt-BR')}</div>
+                  </div>
+                  <div className="meta-item">
+                    <div className="meta-lbl">visto</div>
+                    <div className="meta-val">{timeAgo(agent.lastSeen)}</div>
+                  </div>
+                </div>
+                <div className="agent-hex mono">{blockToHex(agent.currentBlock)}</div>
+              </div>
+            ))}
           </div>
-          <div className="block-grid">
-            {Array.from({ length: TOTAL_BLOCKS }, (_, i) => {
-              const isDone = completedSet.has(i)
-              const isActive = inProgressSet.has(i)
-              let cls = 'blk'
-              if (isDone) cls += ' blk-done'
-              else if (isActive) cls += ' blk-active'
-              return (
-                <div
-                  key={i}
-                  className={cls}
-                  title={`Bloco #${i}\n× ${MULTIPLIER.toLocaleString()}\n0x${blockToHex(i)}`}
-                />
-              )
-            })}
+
+          {offline.length > 0 && (
+            <>
+              <div className="panel-title mt">OFFLINE <span className="badge dim">{offline.length}</span></div>
+              <div className="agents-list">
+                {offline.map(agent => (
+                  <div key={agent.name} className="agent-card offline">
+                    <div className="agent-row1">
+                      <div className="agent-left">
+                        <span className="dot dot-offline" />
+                        <span className="agent-name dim">{agent.name}</span>
+                      </div>
+                      <span className="tag tag-offline">{timeAgo(agent.lastSeen)} atrás</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </section>
+
+        {/* Recent completions */}
+        <section className="panel recent-panel">
+          <div className="panel-title">BLOCOS RECENTES</div>
+          <div className="recent-list">
+            {(data?.recentCompletions ?? []).length === 0 && (
+              <div className="empty">nenhum bloco concluído ainda</div>
+            )}
+            {(data?.recentCompletions ?? []).map((r, i) => (
+              <div key={i} className="recent-row">
+                <div className="recent-num">#{r.block.toLocaleString('pt-BR')}</div>
+                <div className="recent-hex mono">{blockToHex(r.block)}</div>
+                <div className="recent-agent">{r.agent}</div>
+              </div>
+            ))}
           </div>
         </section>
 
-        {/* Right panel */}
-        <aside className="right-panel">
-          {/* Agents */}
-          <section className="agents-section">
-            <div className="section-header">
-              <h2>AGENTES</h2>
+        {/* Stats */}
+        <section className="panel stats-panel">
+          <div className="panel-title">ESTATÍSTICAS</div>
+          <div className="stats-grid">
+            <div className="stat-box">
+              <div className="stat-val">{formatBig(used)}</div>
+              <div className="stat-lbl">blocos processados</div>
             </div>
-            <div className="agents-list">
-              {(data?.agents ?? []).length === 0 && (
-                <div className="empty">nenhum agente conectado</div>
-              )}
-              {(data?.agents ?? []).map(agent => (
-                <div key={agent.name} className={`agent-card agent-${agent.status}`}>
-                  <div className="agent-top">
-                    <div className="agent-name-wrap">
-                      <span className={`agent-dot dot-${agent.status}`} />
-                      <span className="agent-name">{agent.name}</span>
-                    </div>
-                    <span className={`agent-badge badge-${agent.status}`}>{agent.status}</span>
-                  </div>
-                  <div className="agent-meta">
-                    <div className="agent-meta-item">
-                      <span className="meta-lbl">velocidade</span>
-                      <span className="meta-val">{formatSpeed(agent.speed)}</span>
-                    </div>
-                    <div className="agent-meta-item">
-                      <span className="meta-lbl">bloco atual</span>
-                      <span className="meta-val mono">
-                        {agent.currentBlock >= 0 ? `#${agent.currentBlock}` : '—'}
-                      </span>
-                    </div>
-                    <div className="agent-meta-item">
-                      <span className="meta-lbl">visto</span>
-                      <span className="meta-val">{timeAgo(agent.lastSeen)}</span>
-                    </div>
-                  </div>
-                  {agent.currentBlock >= 0 && (
-                    <div className="agent-hex mono">
-                      0x{blockToHex(agent.currentBlock)}
-                    </div>
-                  )}
-                </div>
-              ))}
+            <div className="stat-box">
+              <div className="stat-val">{formatBig(TOTAL_BLOCKS - used)}</div>
+              <div className="stat-lbl">blocos restantes</div>
             </div>
-          </section>
+            <div className="stat-box">
+              <div className="stat-val accent">{pct}%</div>
+              <div className="stat-lbl">cobertura do espaço</div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-val">{formatSpeed(totalSpeed)}</div>
+              <div className="stat-lbl">throughput combinado</div>
+            </div>
+          </div>
 
-          {/* Recent completions */}
-          <section className="recent-section">
-            <div className="section-header">
-              <h2>CONCLUÍDOS RECENTES</h2>
+          <div className="range-info">
+            <div className="range-row">
+              <span className="range-lbl">início</span>
+              <span className="mono range-val">0x4000000000000000</span>
             </div>
-            <div className="recent-list">
-              {(data?.recentCompletions ?? []).map((r, idx) => (
-                <div key={idx} className="recent-item">
-                  <span className="recent-block mono">#{ r.block}</span>
-                  <span className="recent-hex mono">0x{blockToHex(r.block)}</span>
-                  <span className="recent-time">{timeAgo(r.ts)}</span>
-                </div>
-              ))}
-              {(data?.recentCompletions ?? []).length === 0 && (
-                <div className="empty">nenhum bloco concluído ainda</div>
-              )}
+            <div className="range-row">
+              <span className="range-lbl">fim</span>
+              <span className="mono range-val">0x7FFFFFFFFFFFFFFF</span>
             </div>
-          </section>
-        </aside>
+            <div className="range-row">
+              <span className="range-lbl">tamanho do bloco</span>
+              <span className="mono range-val">× 50.000.000</span>
+            </div>
+            <div className="range-row">
+              <span className="range-lbl">total de blocos</span>
+              <span className="mono range-val">{formatBig(TOTAL_BLOCKS)}</span>
+            </div>
+          </div>
+        </section>
       </div>
 
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow:wght@300;400;500;600;700&family=Barlow+Condensed:wght@400;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700;800&display=swap');
 
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         .root {
           min-height: 100vh;
-          background: #080b0f;
-          color: #c8d4e0;
-          font-family: 'Barlow', sans-serif;
-          padding: 0 0 40px;
-          background-image:
-            radial-gradient(ellipse 80% 40% at 50% 0%, rgba(0,180,255,0.04) 0%, transparent 70%),
-            repeating-linear-gradient(0deg, transparent, transparent 39px, rgba(255,255,255,0.015) 40px),
-            repeating-linear-gradient(90deg, transparent, transparent 39px, rgba(255,255,255,0.015) 40px);
+          background: #050810;
+          color: #8ba4b8;
+          font-family: 'Syne', sans-serif;
+          font-size: 14px;
         }
 
         header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 18px 32px;
-          border-bottom: 1px solid rgba(0,200,255,0.12);
-          background: rgba(0,0,0,0.4);
-          backdrop-filter: blur(8px);
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 16px 28px;
+          border-bottom: 1px solid rgba(0,229,255,0.08);
+          background: rgba(5,8,16,0.9);
+          backdrop-filter: blur(12px);
           position: sticky; top: 0; z-index: 10;
         }
 
-        .logo { display: flex; align-items: center; gap: 10px; }
-        .logo-icon { font-size: 22px; color: #00c8ff; filter: drop-shadow(0 0 8px #00c8ff88); }
-        .logo-text {
-          font-family: 'Barlow Condensed', sans-serif;
-          font-size: 22px; font-weight: 700; letter-spacing: 4px;
-          color: #fff; text-shadow: 0 0 20px rgba(0,200,255,0.4);
+        .brand { display: flex; align-items: center; gap: 12px; }
+        .brand-name {
+          font-size: 18px; font-weight: 800; letter-spacing: 5px;
+          color: #fff; line-height: 1;
         }
-        .logo-sub {
-          font-size: 11px; color: #4a6070; letter-spacing: 2px;
-          text-transform: uppercase; margin-left: 4px;
+        .brand-sub { font-size: 10px; letter-spacing: 2px; color: #2a4455; margin-top: 2px; }
+
+        .header-stats { display: flex; gap: 28px; }
+        .hs { text-align: right; }
+        .hs-val {
+          font-size: 18px; font-weight: 700; color: #c8dce8;
+          font-family: 'IBM Plex Mono', monospace; line-height: 1.1;
+        }
+        .hs-val.accent { color: #00e5ff; }
+        .hs-val.dim { color: #2a4455; }
+        .hs-lbl { font-size: 10px; letter-spacing: 1.5px; color: #2a4455; text-transform: uppercase; }
+
+        .prog-wrap { padding: 12px 28px 0; }
+        .prog-track {
+          height: 3px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden;
+          margin-bottom: 5px;
+        }
+        .prog-fill {
+          height: 100%;
+          background: linear-gradient(90deg, #0040ff, #00e5ff);
+          border-radius: 2px;
+          transition: width 1s ease;
+          box-shadow: 0 0 10px rgba(0,229,255,0.4);
+          min-width: 2px;
+        }
+        .prog-labels {
+          display: flex; justify-content: space-between;
+          font-size: 10px;
         }
 
-        .header-stats { display: flex; gap: 32px; }
-        .hstat { display: flex; flex-direction: column; align-items: flex-end; }
-        .hstat-val { font-family: 'Barlow Condensed', sans-serif; font-size: 20px; font-weight: 600; color: #00c8ff; }
-        .hstat-lbl { font-size: 11px; color: #4a6070; letter-spacing: 1px; text-transform: uppercase; }
-
-        .range-bar-wrap { padding: 16px 32px 0; }
-        .range-label {
-          display: flex; justify-content: space-between; align-items: center;
-          font-size: 11px; color: #3a5060; margin-bottom: 6px;
-        }
-        .range-title { font-family: 'Barlow Condensed', sans-serif; font-size: 12px; letter-spacing: 2px; color: #4a7080; }
-        .mono { font-family: 'Share Tech Mono', monospace; }
-        .range-bar {
-          height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden;
-        }
-        .range-fill {
-          height: 100%; background: linear-gradient(90deg, #0080ff, #00c8ff);
-          border-radius: 2px; transition: width 0.8s ease;
-          box-shadow: 0 0 12px rgba(0,200,255,0.5);
-        }
-
-        .main-grid {
+        .layout {
           display: grid;
-          grid-template-columns: 1fr 340px;
-          gap: 20px;
-          padding: 20px 32px 0;
+          grid-template-columns: 1fr 1fr;
+          grid-template-rows: auto auto;
+          gap: 16px;
+          padding: 16px 28px;
         }
 
-        .section-header {
-          display: flex; align-items: center; justify-content: space-between;
-          margin-bottom: 12px;
-        }
-        .section-header h2 {
-          font-family: 'Barlow Condensed', sans-serif;
-          font-size: 12px; font-weight: 600; letter-spacing: 3px;
-          color: #4a6070; border-left: 2px solid #00c8ff; padding-left: 8px;
-        }
-
-        .legend { display: flex; gap: 14px; }
-        .leg { font-size: 11px; color: #3a5060; display: flex; align-items: center; gap: 4px; }
-        .leg-done { color: #00c8ff; }
-        .leg-active { color: #ff8c00; }
-        .leg-pending { color: #2a3a48; }
-
-        .block-map-section {
+        .panel {
           background: rgba(255,255,255,0.02);
           border: 1px solid rgba(255,255,255,0.05);
-          border-radius: 8px; padding: 16px;
+          border-radius: 8px;
+          padding: 16px;
         }
 
-        .block-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(9px, 1fr));
-          gap: 2px;
-        }
+        .agents-panel { grid-row: 1 / 3; }
+        .stats-panel  { grid-column: 2; }
 
-        .blk {
-          width: 100%; aspect-ratio: 1;
-          background: rgba(255,255,255,0.04);
-          border-radius: 1px;
-          transition: background 0.3s;
-          cursor: default;
+        .panel-title {
+          font-size: 10px; font-weight: 700; letter-spacing: 3px;
+          color: #2a4455; text-transform: uppercase;
+          border-left: 2px solid #00e5ff; padding-left: 8px;
+          margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
         }
-        .blk-done {
-          background: rgba(0,200,255,0.55);
-          box-shadow: 0 0 3px rgba(0,200,255,0.3);
-        }
-        .blk-active {
-          background: #ff8c00;
-          box-shadow: 0 0 6px rgba(255,140,0,0.7);
-          animation: pulse 1s ease-in-out infinite;
-        }
-        @keyframes pulse {
-          0%,100% { opacity: 1; }
-          50% { opacity: 0.5; }
-        }
+        .panel-title.mt { margin-top: 20px; }
 
-        .right-panel { display: flex; flex-direction: column; gap: 16px; }
-
-        .agents-section, .recent-section {
-          background: rgba(255,255,255,0.02);
-          border: 1px solid rgba(255,255,255,0.05);
-          border-radius: 8px; padding: 16px;
+        .badge {
+          background: rgba(0,229,255,0.1); color: #00e5ff;
+          font-size: 10px; padding: 1px 6px; border-radius: 3px;
+          border: 1px solid rgba(0,229,255,0.2);
         }
+        .badge.dim { background: rgba(255,255,255,0.04); color: #2a4455; border-color: rgba(255,255,255,0.06); }
 
-        .agents-list { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow-y: auto; }
+        .agents-list { display: flex; flex-direction: column; gap: 8px; }
 
         .agent-card {
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.05);
           border-radius: 6px; padding: 10px 12px;
-          transition: border-color 0.2s;
+          background: rgba(255,255,255,0.02);
         }
-        .agent-working { border-color: rgba(255,140,0,0.3); }
-        .agent-idle    { border-color: rgba(0,200,255,0.15); }
-        .agent-offline { opacity: 0.5; }
+        .agent-card.working { border-color: rgba(0,229,255,0.2); }
+        .agent-card.offline { opacity: 0.4; }
 
-        .agent-top {
-          display: flex; align-items: center;
-          justify-content: space-between; margin-bottom: 8px;
+        .agent-row1 {
+          display: flex; align-items: center; justify-content: space-between;
+          margin-bottom: 8px;
         }
-        .agent-name-wrap { display: flex; align-items: center; gap: 7px; }
-        .agent-dot {
-          width: 7px; height: 7px; border-radius: 50%;
-          flex-shrink: 0;
-        }
-        .dot-working { background: #ff8c00; box-shadow: 0 0 6px #ff8c00; animation: pulse 1s infinite; }
-        .dot-idle    { background: #00c8ff; box-shadow: 0 0 4px #00c8ff; }
-        .dot-offline { background: #3a4a58; }
-        .dot-done    { background: #00ff88; box-shadow: 0 0 4px #00ff88; }
+        .agent-left { display: flex; align-items: center; gap: 8px; }
 
-        .agent-name {
-          font-family: 'Share Tech Mono', monospace;
-          font-size: 13px; color: #d0e0ec;
-        }
+        .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+        .dot-working { background: #00e5ff; box-shadow: 0 0 8px #00e5ff; animation: pulse 1.5s ease-in-out infinite; }
+        .dot-idle    { background: #446688; }
+        .dot-offline { background: #1a2a38; }
 
-        .agent-badge {
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+        .agent-name { font-size: 13px; color: #c8dce8; font-family: 'IBM Plex Mono', monospace; }
+        .agent-name.dim { color: #2a4455; }
+
+        .tag {
           font-size: 9px; font-weight: 600; letter-spacing: 1.5px;
-          text-transform: uppercase; padding: 2px 6px; border-radius: 3px;
+          text-transform: uppercase; padding: 2px 7px; border-radius: 3px;
         }
-        .badge-working { background: rgba(255,140,0,0.15); color: #ff8c00; border: 1px solid rgba(255,140,0,0.3); }
-        .badge-idle    { background: rgba(0,200,255,0.1); color: #00c8ff; border: 1px solid rgba(0,200,255,0.2); }
-        .badge-offline { background: rgba(255,255,255,0.04); color: #4a6070; border: 1px solid rgba(255,255,255,0.06); }
-        .badge-done    { background: rgba(0,255,136,0.1); color: #00ff88; border: 1px solid rgba(0,255,136,0.2); }
+        .tag-working { background: rgba(0,229,255,0.08); color: #00e5ff; border: 1px solid rgba(0,229,255,0.2); }
+        .tag-idle    { background: rgba(255,255,255,0.04); color: #4a6070; border: 1px solid rgba(255,255,255,0.06); }
+        .tag-offline { background: transparent; color: #2a3a48; border: none; font-size: 10px; letter-spacing: 0; }
 
-        .agent-meta {
+        .agent-row2 {
           display: grid; grid-template-columns: 1fr 1fr 1fr;
-          gap: 4px;
+          gap: 4px; margin-bottom: 7px;
         }
-        .agent-meta-item { display: flex; flex-direction: column; }
-        .meta-lbl { font-size: 9px; color: #3a5060; text-transform: uppercase; letter-spacing: 1px; }
-        .meta-val { font-size: 12px; color: #7a9ab0; font-weight: 500; }
+        .meta-item { display: flex; flex-direction: column; }
+        .meta-lbl { font-size: 9px; color: #1a3040; text-transform: uppercase; letter-spacing: 1px; }
+        .meta-val { font-size: 12px; color: #6a8898; font-weight: 600; }
+        .meta-val.mono { font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
 
         .agent-hex {
-          margin-top: 6px; font-size: 10px; color: #2a5060;
-          letter-spacing: 1px; border-top: 1px solid rgba(255,255,255,0.04);
-          padding-top: 5px;
+          font-size: 10px; color: #1a3040; letter-spacing: 1px;
+          border-top: 1px solid rgba(255,255,255,0.04); padding-top: 6px;
         }
 
-        .recent-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
-        .recent-item {
-          display: flex; align-items: center; gap: 8px;
-          padding: 5px 8px; border-radius: 4px;
+        .recent-list { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto; }
+        .recent-row {
+          display: grid; grid-template-columns: 100px 1fr auto;
+          align-items: center; gap: 8px;
+          padding: 6px 8px; border-radius: 4px;
           background: rgba(255,255,255,0.02);
           font-size: 11px;
         }
-        .recent-block { color: #00c8ff; min-width: 36px; }
-        .recent-hex { color: #2a6070; flex: 1; font-size: 10px; }
-        .recent-time { color: #2a4050; white-space: nowrap; }
+        .recent-num { font-family: 'IBM Plex Mono', monospace; color: #00e5ff; }
+        .recent-hex { font-family: 'IBM Plex Mono', monospace; color: #1a3040; font-size: 10px; }
+        .recent-agent { color: #2a4455; font-size: 10px; text-align: right; }
 
-        .empty { color: #2a4050; font-size: 12px; text-align: center; padding: 16px; }
+        .stats-grid {
+          display: grid; grid-template-columns: 1fr 1fr;
+          gap: 8px; margin-bottom: 16px;
+        }
+        .stat-box {
+          background: rgba(255,255,255,0.02);
+          border: 1px solid rgba(255,255,255,0.04);
+          border-radius: 6px; padding: 12px;
+        }
+        .stat-val {
+          font-family: 'IBM Plex Mono', monospace;
+          font-size: 15px; font-weight: 500; color: #8aa4b8;
+          margin-bottom: 3px;
+        }
+        .stat-val.accent { color: #00e5ff; }
+        .stat-lbl { font-size: 10px; color: #1a3040; text-transform: uppercase; letter-spacing: 1px; }
 
-        ::-webkit-scrollbar { width: 4px; }
+        .range-info { display: flex; flex-direction: column; gap: 6px; }
+        .range-row { display: flex; justify-content: space-between; align-items: center; }
+        .range-lbl { font-size: 11px; color: #1a3040; }
+        .range-val { font-size: 11px; color: #2a5060; }
+
+        .mono { font-family: 'IBM Plex Mono', monospace; }
+        .dim  { color: #2a4455; }
+        .empty { color: #1a3040; font-size: 12px; text-align: center; padding: 20px; }
+
+        ::-webkit-scrollbar { width: 3px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: rgba(0,200,255,0.2); border-radius: 2px; }
+        ::-webkit-scrollbar-thumb { background: rgba(0,229,255,0.15); border-radius: 2px; }
+
+        @media (max-width: 900px) {
+          .layout { grid-template-columns: 1fr; }
+          .agents-panel { grid-row: auto; }
+          .header-stats { gap: 14px; }
+        }
       `}</style>
     </div>
   )

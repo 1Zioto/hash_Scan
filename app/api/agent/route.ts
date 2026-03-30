@@ -1,10 +1,22 @@
-import { kv } from '@vercel/kv'
+import { Redis } from '@upstash/redis'
 import { NextRequest, NextResponse } from 'next/server'
 
-const RANGE_START = BigInt('0x4000000000000000')
-const RANGE_END   = BigInt('0x7FFFFFFFFFFFFFFF')
-const MULTIPLIER  = BigInt(50_000_000)
-const TOTAL_BLOCKS = Number((RANGE_END - RANGE_START + 1n) / MULTIPLIER) // ~1,844
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL!,
+  token: process.env.KV_REST_API_TOKEN!,
+})
+
+const TOTAL_BLOCKS = 92_233_720_368
+const OFFLINE_TIMEOUT = 15_000
+
+async function pickRandomBlock(): Promise<number | null> {
+  for (let i = 0; i < 20; i++) {
+    const n = Math.floor(Math.random() * TOTAL_BLOCKS)
+    const used = await redis.sismember('used_blocks', String(n))
+    if (!used) return n
+  }
+  return null
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json()
@@ -15,95 +27,61 @@ export async function POST(req: NextRequest) {
   const now = Date.now()
 
   if (action === 'connect') {
-    // Register agent / heartbeat
-    await kv.hset(`agent:${agentName}`, {
+    const block = await pickRandomBlock()
+    if (block === null) return NextResponse.json({ error: 'no blocks available' }, { status: 503 })
+
+    await redis.sadd('used_blocks', String(block))
+    await redis.hset(`agent:${agentName}`, {
       name: agentName,
       speed: speed ?? 0,
       lastSeen: now,
-      status: 'idle',
-      currentBlock: -1,
+      status: 'working',
+      currentBlock: block,
     })
-    await kv.zadd('agents', { score: now, member: agentName })
+    await redis.zadd('agents', { score: now, member: agentName })
 
-    // Give first block
-    const block = await assignNextBlock(agentName)
-    return NextResponse.json({ block, totalBlocks: TOTAL_BLOCKS })
+    return NextResponse.json({ block })
   }
 
   if (action === 'heartbeat') {
-    await kv.hset(`agent:${agentName}`, { lastSeen: now, speed: speed ?? 0 })
-    const agent = await kv.hgetall(`agent:${agentName}`)
-    return NextResponse.json({ ok: true, currentBlock: agent?.currentBlock ?? -1 })
+    await redis.hset(`agent:${agentName}`, { lastSeen: now, speed: speed ?? 0 })
+    return NextResponse.json({ ok: true })
   }
 
   if (action === 'submit') {
-    // Mark block as done
-    if (completedBlock !== undefined && completedBlock >= 0) {
-      await kv.hset(`agent:${agentName}`, { status: 'idle', currentBlock: -1 })
-      await kv.zadd('completed', { score: now, member: String(completedBlock) })
-      await kv.srem('in_progress', String(completedBlock))
-    }
-    // Assign next block
-    const block = await assignNextBlock(agentName)
-    return NextResponse.json({ block, totalBlocks: TOTAL_BLOCKS })
+    const block = await pickRandomBlock()
+    if (block === null) return NextResponse.json({ block: null })
+
+    await redis.sadd('used_blocks', String(block))
+    await redis.hset(`agent:${agentName}`, {
+      lastSeen: now,
+      speed: speed ?? 0,
+      status: 'working',
+      currentBlock: block,
+    })
+    await redis.zadd('completed_log', { score: now, member: `${completedBlock}:${agentName}` })
+
+    return NextResponse.json({ block })
   }
 
   if (action === 'disconnect') {
-    const agent = await kv.hgetall(`agent:${agentName}`)
-    if (agent?.currentBlock && Number(agent.currentBlock) >= 0) {
-      await kv.srem('in_progress', String(agent.currentBlock))
-    }
-    await kv.hset(`agent:${agentName}`, { status: 'offline', lastSeen: now, currentBlock: -1 })
+    await redis.hset(`agent:${agentName}`, { status: 'offline', lastSeen: now, currentBlock: -1 })
     return NextResponse.json({ ok: true })
   }
 
   return NextResponse.json({ error: 'unknown action' }, { status: 400 })
 }
 
-async function assignNextBlock(agentName: string): Promise<number> {
-  // Find next block not yet completed or in progress
-  const completedRaw = await kv.zrange('completed', 0, -1)
-  const inProgressRaw = await kv.smembers('in_progress')
-
-  const completed = new Set((completedRaw as string[]).map(Number))
-  const inProgress = new Set((inProgressRaw as string[]).map(Number))
-
-  let nextBlock = -1
-  for (let i = 0; i < TOTAL_BLOCKS; i++) {
-    if (!completed.has(i) && !inProgress.has(i)) {
-      nextBlock = i
-      break
-    }
-  }
-
-  if (nextBlock === -1) {
-    // All done!
-    await kv.hset(`agent:${agentName}`, { status: 'done', currentBlock: -1 })
-    return -1
-  }
-
-  await kv.sadd('in_progress', String(nextBlock))
-  await kv.hset(`agent:${agentName}`, {
-    status: 'working',
-    currentBlock: nextBlock,
-  })
-
-  return nextBlock
-}
-
 export async function GET() {
-  // Dashboard data endpoint
   const now = Date.now()
-  const TIMEOUT = 10_000 // 10s offline threshold
-
-  const agentNames = await kv.zrange('agents', 0, -1) as string[]
+  const agentNames = (await redis.zrange('agents', 0, -1)) as string[]
 
   const agents = await Promise.all(
     agentNames.map(async (name) => {
-      const a = await kv.hgetall(`agent:${name}`)
+      const a = await redis.hgetall(`agent:${name}`)
       if (!a) return null
       const lastSeen = Number(a.lastSeen ?? 0)
-      const isOnline = now - lastSeen < TIMEOUT
+      const isOnline = now - lastSeen < OFFLINE_TIMEOUT
       return {
         name: a.name,
         speed: Number(a.speed ?? 0),
@@ -114,28 +92,19 @@ export async function GET() {
     })
   )
 
-  const completedRaw = await kv.zrange('completed', 0, -1)
-  const completedWithScores = await kv.zrange('completed', 0, -1, { withScores: true })
-  const inProgressRaw = await kv.smembers('in_progress')
+  const usedCount = await redis.scard('used_blocks')
 
-  const completed = (completedRaw as string[]).map(Number)
-  const inProgress = (inProgressRaw as string[]).map(Number)
-
-  // Recent completions (last 20) with timestamps
-  const recent: { block: number; ts: number }[] = []
-  if (Array.isArray(completedWithScores)) {
-    for (let i = 0; i < completedWithScores.length; i += 2) {
-      recent.push({ block: Number(completedWithScores[i]), ts: Number(completedWithScores[i + 1]) })
-    }
-  }
-  recent.sort((a, b) => b.ts - a.ts)
+  const recentRaw = (await redis.zrange('completed_log', 0, -1, { rev: true })) as string[]
+  const recent = recentRaw.slice(0, 20).map((entry) => {
+    const [block, agent] = entry.split(':')
+    return { block: Number(block), agent }
+  })
 
   return NextResponse.json({
     agents: agents.filter(Boolean),
-    completed,
-    inProgress,
-    recentCompletions: recent.slice(0, 20),
+    usedCount: Number(usedCount),
     totalBlocks: TOTAL_BLOCKS,
-    progress: completed.length / TOTAL_BLOCKS,
+    progress: Number(usedCount) / TOTAL_BLOCKS,
+    recentCompletions: recent,
   })
 }
